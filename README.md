@@ -22,7 +22,20 @@ Body:
 ```json
 {
   "to": "ONESIGNAL_PLAYER_ID",
-  "title": "Новое сообщение",
-  "body": "Вам написали по объявлению"
+  "title": "Нове повідомлення",
+  "body": "Привіт, це нове повідомлення",
+  "type": "chat",
+  "senderName": "Artem"
 }
 ```
+
+Optional fields:
+- `type`: `chat` or `system`
+- `senderName`: sender display name
+
+Server-side formatting:
+- old clients: server still reformats push body into a cleaner two-line layout
+- new clients: server uses `senderName` for exact format like:
+  - `Нове повідомлення`
+  - `Від: Artem`
+  - `текст повідомлення`
