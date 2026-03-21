@@ -9,7 +9,7 @@ const ONE_SIGNAL_APP_ID = process.env.ONESIGNAL_APP_ID || '';
 const ONE_SIGNAL_REST_API_KEY = process.env.ONESIGNAL_REST_API_KEY || '';
 const ONE_SIGNAL_API_URL =
   process.env.ONESIGNAL_CREATE_MESSAGE_URL ||
-  'https://onesignal.com/api/v1/notifications';
+  'https://api.onesignal.com/notifications';
 const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME || '';
 const CLOUDINARY_API_KEY = process.env.CLOUDINARY_API_KEY || '';
 const CLOUDINARY_API_SECRET = process.env.CLOUDINARY_API_SECRET || '';
@@ -232,6 +232,7 @@ app.post('/notify', async (req, res) => {
   const payload = {
     app_id: ONE_SIGNAL_APP_ID,
     include_subscription_ids: [to],
+    target_channel: 'push',
     headings: {en: formatted.title},
     contents: {en: formatted.body},
   };
@@ -687,6 +688,7 @@ function buildAudienceTargeting(input) {
   return {
     targeting: {
       include_subscription_ids: subscriptionIds,
+      target_channel: 'push',
     },
     summary: {
       mode,
@@ -1102,11 +1104,14 @@ function extractFirebaseRestError(payload) {
 }
 
 async function sendOneSignalRequest(payload) {
+  const authorizationHeader = buildOneSignalAuthorizationHeader(
+    ONE_SIGNAL_REST_API_KEY
+  );
   const response = await fetch(ONE_SIGNAL_API_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Basic ${ONE_SIGNAL_REST_API_KEY}`,
+      Authorization: authorizationHeader,
     },
     body: JSON.stringify(payload),
   });
@@ -1121,6 +1126,18 @@ async function sendOneSignalRequest(payload) {
     );
   }
   return parsed;
+}
+
+function buildOneSignalAuthorizationHeader(apiKey) {
+  const normalized = normalizeText(apiKey);
+  if (!normalized) return '';
+  if (
+    normalized.startsWith('Key ') ||
+    normalized.startsWith('Basic ')
+  ) {
+    return normalized;
+  }
+  return `Key ${normalized}`;
 }
 
 function parseMaybeJson(text) {
