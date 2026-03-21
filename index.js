@@ -377,7 +377,28 @@ app.post('/api/push/send', requireAdmin, async (req, res) => {
       })
     );
 
-    const response = await sendOneSignalRequest(payload);
+    let response = await sendOneSignalRequest(payload);
+    let initialRequestDebug = requestDebug;
+
+    if (shouldRetryDefaultPushAudience(response, audience.summary, payload)) {
+      const retryPayload = buildDefaultPushAudiencePayload(payload);
+      const retryDebug = buildOneSignalPayloadDebug(retryPayload);
+      console.warn(
+        '[push-send] retrying without explicit segments',
+        JSON.stringify({
+          templateId: template.id,
+          initialRequestDebug,
+          retryDebug,
+        })
+      );
+      response = await sendOneSignalRequest(retryPayload);
+      requestDebug = {
+        ...retryDebug,
+        fallbackApplied: true,
+        initialIncludedSegments: initialRequestDebug.includedSegments || [],
+      };
+    }
+
     const oneSignalMeta = pickOneSignalMeta(response);
     console.log(
       '[push-send] response',
@@ -391,6 +412,7 @@ app.post('/api/push/send', requireAdmin, async (req, res) => {
     await savePushHistory(
       {
       ...historyRecord,
+      requestDebug,
       oneSignal: oneSignalMeta,
       },
       req.adminToken
@@ -891,6 +913,28 @@ function buildPushMedia(input) {
   };
 }
 
+function shouldRetryDefaultPushAudience(response, audienceSummary, payload) {
+  if (!response || typeof response !== 'object') return false;
+  if (!audienceSummary || audienceSummary.mode !== 'subscribed') return false;
+  if (!Array.isArray(payload?.included_segments) || payload.included_segments.length === 0) {
+    return false;
+  }
+
+  const errorsText = extractOneSignalErrorMessage(response);
+  return (
+    !normalizeText(response.id) &&
+    errorsText.includes('All included players are not subscribed')
+  );
+}
+
+function buildDefaultPushAudiencePayload(payload) {
+  const nextPayload = {...payload};
+  delete nextPayload.included_segments;
+  delete nextPayload.excluded_segments;
+  nextPayload.target_channel = 'push';
+  return nextPayload;
+}
+
 function clampInteger(value, fallback, min, max) {
   const parsed = Number.parseInt(String(value || fallback), 10);
   if (!Number.isFinite(parsed)) return fallback;
@@ -946,6 +990,8 @@ function buildOneSignalPayloadDebug(payload) {
     targetingType = 'external_ids';
   } else if (filters.length > 0) {
     targetingType = 'filters';
+  } else if (payload.target_channel === 'push') {
+    targetingType = 'default_push_audience';
   }
 
   return {
