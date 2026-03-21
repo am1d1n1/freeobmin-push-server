@@ -33,6 +33,7 @@ const DEFAULT_ALLOWED_ORIGINS = [
 ];
 
 const ADMIN_ALLOWED_ORIGINS = parseList(process.env.ADMIN_ALLOWED_ORIGINS);
+const ONE_SIGNAL_SEGMENTS_CACHE_TTL_MS = 5 * 60 * 1000;
 
 const PUSH_TEMPLATES = [
   {
@@ -161,6 +162,11 @@ const PUSH_AUDIENCE_MODES = [
   'subscription_ids',
 ];
 const PUSH_HISTORY_COLLECTION = 'admin_push_logs';
+let cachedSubscribedSegment = {
+  name: '',
+  checkedAt: 0,
+  available: [],
+};
 
 let firestore = null;
 let firebaseInitError = '';
@@ -286,6 +292,9 @@ app.post('/api/push/send', requireAdmin, async (req, res) => {
     return res.status(500).json({error: 'Missing OneSignal config'});
   }
 
+  let historyRecord = null;
+  let requestDebug = null;
+
   try {
     const input = req.body || {};
     const template = resolveTemplate(input.templateId);
@@ -305,7 +314,7 @@ app.post('/api/push/send', requireAdmin, async (req, res) => {
       chatId: input.chatId || input.route?.chatId,
     });
 
-    const audience = buildAudienceTargeting(input.audience);
+    const audience = await buildAudienceTargeting(input.audience);
     const media = buildPushMedia(input.media || input);
     const payload = {
       app_id: ONE_SIGNAL_APP_ID,
@@ -319,11 +328,8 @@ app.post('/api/push/send', requireAdmin, async (req, res) => {
       payload.subtitle = {en: subtitle};
     }
 
-    const response = await sendOneSignalRequest(payload);
-    const oneSignalMeta = pickOneSignalMeta(response);
-
-    await savePushHistory(
-      {
+    requestDebug = buildOneSignalPayloadDebug(payload);
+    historyRecord = {
       title,
       subtitle,
       body,
@@ -331,10 +337,36 @@ app.post('/api/push/send', requireAdmin, async (req, res) => {
       audience: audience.summary,
       route: route.summary,
       media: media.summary,
+      requestDebug,
       sentBy: {
         uid: req.adminUser.uid,
         email: req.adminUser.email || '',
       },
+    };
+
+    console.log(
+      '[push-send] request',
+      JSON.stringify({
+        templateId: template.id,
+        audienceMode: audience.summary.mode,
+        requestDebug,
+      })
+    );
+
+    const response = await sendOneSignalRequest(payload);
+    const oneSignalMeta = pickOneSignalMeta(response);
+    console.log(
+      '[push-send] response',
+      JSON.stringify({
+        templateId: template.id,
+        requestDebug,
+        oneSignal: oneSignalMeta,
+      })
+    );
+
+    await savePushHistory(
+      {
+      ...historyRecord,
       oneSignal: oneSignalMeta,
       },
       req.adminToken
@@ -346,12 +378,42 @@ app.post('/api/push/send', requireAdmin, async (req, res) => {
       audience: audience.summary,
       route: route.summary,
       media: media.summary,
+      requestDebug,
       oneSignal: oneSignalMeta,
     });
   } catch (error) {
+    const oneSignalMeta = pickOneSignalMeta(error.responseBody);
+    if (historyRecord) {
+      try {
+        await savePushHistory(
+          {
+            ...historyRecord,
+            oneSignal: {
+              ...oneSignalMeta,
+              statusCode: error.statusCode || null,
+              message: error.message || String(error),
+            },
+          },
+          req.adminToken
+        );
+      } catch (_historyError) {
+        // Ignore history failures in the error path.
+      }
+    }
+    console.warn(
+      '[push-send] failed',
+      JSON.stringify({
+        requestDebug,
+        statusCode: error.statusCode || 400,
+        error: error.message || String(error),
+        response: error.responseBody || null,
+      })
+    );
     return res.status(error.statusCode || 400).json({
       error: error.message || String(error),
       response: error.responseBody || null,
+      requestDebug,
+      oneSignal: oneSignalMeta,
     });
   }
 });
@@ -615,7 +677,7 @@ function buildAdminPushRoute(input) {
   };
 }
 
-function buildAudienceTargeting(input) {
+async function buildAudienceTargeting(input) {
   const source = isPlainObject(input) ? input : {};
   const mode = normalizeText(source.mode || 'subscribed').toLowerCase();
 
@@ -624,13 +686,16 @@ function buildAudienceTargeting(input) {
   }
 
   if (mode === 'subscribed') {
+    const segment = await resolveSubscribedSegment();
     return {
       targeting: {
-        included_segments: ['Subscribed Users'],
+        included_segments: [segment.name],
         target_channel: 'push',
       },
       summary: {
         mode,
+        segmentName: segment.name,
+        availableSegments: segment.available,
       },
     };
   }
@@ -697,6 +762,80 @@ function buildAudienceTargeting(input) {
   };
 }
 
+async function resolveSubscribedSegment() {
+  const now = Date.now();
+  if (
+    cachedSubscribedSegment.name &&
+    now - cachedSubscribedSegment.checkedAt < ONE_SIGNAL_SEGMENTS_CACHE_TTL_MS
+  ) {
+    return cachedSubscribedSegment;
+  }
+
+  const fallback = {
+    name: 'Subscribed Users',
+    checkedAt: now,
+    available: [],
+  };
+
+  if (!ONE_SIGNAL_APP_ID || !ONE_SIGNAL_REST_API_KEY) {
+    cachedSubscribedSegment = fallback;
+    return fallback;
+  }
+
+  try {
+    const response = await fetch(
+      `https://api.onesignal.com/apps/${ONE_SIGNAL_APP_ID}/segments`,
+      {
+        method: 'GET',
+        headers: {
+          Authorization: buildOneSignalAuthorizationHeader(
+            ONE_SIGNAL_REST_API_KEY
+          ),
+        },
+      }
+    );
+
+    const text = await response.text();
+    const parsed = parseMaybeJson(text);
+    if (!response.ok) {
+      throw createHttpError(
+        extractOneSignalErrorMessage(parsed) ||
+          `OneSignal segments request failed with ${response.status}`,
+        response.status,
+        parsed
+      );
+    }
+
+    const segments = Array.isArray(parsed?.segments) ? parsed.segments : [];
+    const names = segments
+      .map((segment) => normalizeText(segment?.name))
+      .filter(Boolean);
+    const preferredName =
+      names.find((name) => name === 'Subscribed Users') ||
+      names.find((name) => name === 'All Subscribers') ||
+      names.find((name) => /subscribers?/i.test(name)) ||
+      names.find((name) => /subscribed/i.test(name)) ||
+      fallback.name;
+
+    cachedSubscribedSegment = {
+      name: preferredName,
+      checkedAt: now,
+      available: names,
+    };
+  } catch (error) {
+    console.warn(
+      '[push-send] segment lookup failed',
+      JSON.stringify({
+        error: error.message || String(error),
+        response: error.responseBody || null,
+      })
+    );
+    cachedSubscribedSegment = fallback;
+  }
+
+  return cachedSubscribedSegment;
+}
+
 function createHttpError(message, statusCode, responseBody = null) {
   const error = new Error(message);
   error.statusCode = statusCode;
@@ -754,6 +893,54 @@ function pickOneSignalMeta(response) {
     recipients: response.recipients || null,
     externalId: response.external_id || null,
     errors: response.errors || null,
+    statusCode: response.statusCode || null,
+    message: response.message || null,
+  };
+}
+
+function buildOneSignalPayloadDebug(payload) {
+  const includedSegments = Array.isArray(payload.included_segments)
+    ? payload.included_segments
+    : [];
+  const excludedSegments = Array.isArray(payload.excluded_segments)
+    ? payload.excluded_segments
+    : [];
+  const subscriptionIds = Array.isArray(payload.include_subscription_ids)
+    ? payload.include_subscription_ids
+    : [];
+  const externalIds = Array.isArray(payload.include_aliases?.external_id)
+    ? payload.include_aliases.external_id
+    : [];
+  const filters = Array.isArray(payload.filters) ? payload.filters : [];
+
+  let targetingType = 'unknown';
+  if (includedSegments.length > 0 || excludedSegments.length > 0) {
+    targetingType = 'segments';
+  } else if (subscriptionIds.length > 0) {
+    targetingType = 'subscription_ids';
+  } else if (externalIds.length > 0) {
+    targetingType = 'external_ids';
+  } else if (filters.length > 0) {
+    targetingType = 'filters';
+  }
+
+  return {
+    appId: payload.app_id || '',
+    targetChannel: payload.target_channel || '',
+    targetingType,
+    includedSegments,
+    excludedSegments,
+    subscriptionIdCount: subscriptionIds.length,
+    externalIdCount: externalIds.length,
+    filterCount: filters.length,
+    hasData: isPlainObject(payload.data) && Object.keys(payload.data).length > 0,
+    hasImage: Boolean(
+      payload.big_picture ||
+      payload.chrome_web_image ||
+      payload.huawei_big_picture ||
+      (isPlainObject(payload.ios_attachments) &&
+        Object.keys(payload.ios_attachments).length > 0)
+    ),
   };
 }
 
@@ -767,6 +954,7 @@ function serializePushHistoryRecord(id, data) {
     audience: data.audience || {},
     route: data.route || {},
     media: data.media || {},
+    requestDebug: data.requestDebug || {},
     sentBy: data.sentBy || {},
     oneSignal: data.oneSignal || {},
     createdAt: serializeTimestamp(data.createdAt),
