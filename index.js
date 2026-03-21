@@ -7,9 +7,13 @@ app.use(express.json({limit: '8mb'}));
 
 const ONE_SIGNAL_APP_ID = process.env.ONESIGNAL_APP_ID || '';
 const ONE_SIGNAL_REST_API_KEY = process.env.ONESIGNAL_REST_API_KEY || '';
+const ONE_SIGNAL_LEGACY_REST_API_KEY =
+  process.env.ONESIGNAL_LEGACY_REST_API_KEY || '';
 const ONE_SIGNAL_API_URL =
   process.env.ONESIGNAL_CREATE_MESSAGE_URL ||
   'https://api.onesignal.com/notifications';
+const ONE_SIGNAL_LEGACY_PLAYERS_URL =
+  'https://onesignal.com/api/v1/players';
 const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME || '';
 const CLOUDINARY_API_KEY = process.env.CLOUDINARY_API_KEY || '';
 const CLOUDINARY_API_SECRET = process.env.CLOUDINARY_API_SECRET || '';
@@ -284,6 +288,26 @@ app.get('/api/push/history', requireAdmin, async (req, res) => {
     return res.json({ok: true, items});
   } catch (error) {
     return res.status(500).json({error: String(error)});
+  }
+});
+
+app.get('/api/push/subscriptions', requireAdmin, async (req, res) => {
+  const limit = clampInteger(req.query.limit, 150, 1, 500);
+
+  try {
+    const directory = await readPushSubscriptionDirectory(limit, req.adminToken);
+    return res.json({
+      ok: true,
+      source: directory.source,
+      legacyEnabled: Boolean(ONE_SIGNAL_LEGACY_REST_API_KEY),
+      items: directory.items,
+      total: directory.total,
+    });
+  } catch (error) {
+    return res.status(error.statusCode || 500).json({
+      error: error.message || String(error),
+      response: error.responseBody || null,
+    });
   }
 });
 
@@ -1018,6 +1042,226 @@ async function savePushHistory(record, authToken) {
   }
 }
 
+async function readPushSubscriptionDirectory(limit, authToken) {
+  if (ONE_SIGNAL_LEGACY_REST_API_KEY) {
+    try {
+      return await readOneSignalPlayersDirectory(limit);
+    } catch (error) {
+      console.warn(
+        '[push-directory] legacy lookup failed',
+        JSON.stringify({
+          error: error.message || String(error),
+          response: error.responseBody || null,
+        })
+      );
+    }
+  }
+
+  return readFirestoreSubscriptionDirectory(limit, authToken);
+}
+
+async function readOneSignalPlayersDirectory(limit) {
+  const items = [];
+  let total = 0;
+  let offset = 0;
+
+  while (items.length < limit) {
+    const pageLimit = Math.min(300, Math.max(50, limit - items.length));
+    const url =
+      `${ONE_SIGNAL_LEGACY_PLAYERS_URL}?app_id=${encodeURIComponent(
+        ONE_SIGNAL_APP_ID
+      )}&limit=${pageLimit}&offset=${offset}`;
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Authorization: buildOneSignalLegacyAuthorizationHeader(
+          ONE_SIGNAL_LEGACY_REST_API_KEY
+        ),
+      },
+    });
+
+    const text = await response.text();
+    const parsed = parseMaybeJson(text);
+    if (!response.ok) {
+      throw createHttpError(
+        extractOneSignalErrorMessage(parsed) ||
+          `OneSignal players request failed with ${response.status}`,
+        response.status,
+        parsed
+      );
+    }
+
+    const players = Array.isArray(parsed?.players) ? parsed.players : [];
+    total = Number(parsed?.total_count || total || 0);
+
+    for (const player of players) {
+      if (!isActiveLegacyPlayer(player)) continue;
+      items.push(serializeLegacyPlayer(player));
+      if (items.length >= limit) break;
+    }
+
+    if (players.length < pageLimit) break;
+    offset += players.length;
+  }
+
+  return {
+    source: 'onesignal_legacy',
+    total: total || items.length,
+    items,
+  };
+}
+
+async function readFirestoreSubscriptionDirectory(limit, authToken) {
+  if (firestore) {
+    const snapshot = await firestore
+      .collection('users')
+      .where('oneSignalId', '>', '')
+      .orderBy('oneSignalId')
+      .limit(limit)
+      .get();
+
+    const items = snapshot.docs
+      .map((doc) => serializeFirestoreSubscription(doc.id, doc.data() || {}))
+      .filter(Boolean);
+
+    return {
+      source: 'firestore_users',
+      total: items.length,
+      items,
+    };
+  }
+
+  if (!authToken) {
+    throw createHttpError('Firestore is not ready', 500);
+  }
+
+  const documents = await runFirestoreQuery(
+    {
+      from: [{collectionId: 'users'}],
+      where: {
+        fieldFilter: {
+          field: {fieldPath: 'oneSignalId'},
+          op: 'GREATER_THAN',
+          value: {stringValue: ''},
+        },
+      },
+      orderBy: [
+        {
+          field: {fieldPath: 'oneSignalId'},
+          direction: 'ASCENDING',
+        },
+      ],
+      limit,
+    },
+    authToken
+  );
+
+  const items = documents
+    .map((doc) => {
+      const decoded = decodeFirestoreDocument(doc);
+      return serializeFirestoreSubscription(decoded.id || '', decoded);
+    })
+    .filter(Boolean);
+
+  return {
+    source: 'firestore_users',
+    total: items.length,
+    items,
+  };
+}
+
+function serializeFirestoreSubscription(uid, data) {
+  const subscriptionId = normalizeText(data.oneSignalId);
+  if (!subscriptionId) return null;
+
+  const name = normalizeText(data.name || data.displayName || data.email || '');
+  return {
+    subscriptionId,
+    label: name || `User ${uid.slice(0, 8)}`,
+    deviceName: '',
+    platform: '',
+    externalId: uid,
+    identifier: '',
+    lastActiveAt: normalizeText(data.lastSeen || ''),
+    source: 'firestore_users',
+  };
+}
+
+function isActiveLegacyPlayer(player) {
+  const id = normalizeText(player?.id);
+  if (!id) return false;
+  if (player?.invalid_identifier === true) return false;
+
+  const notificationTypes = Number(player?.notification_types);
+  if (Number.isFinite(notificationTypes) && notificationTypes <= 0) {
+    return false;
+  }
+
+  return true;
+}
+
+function serializeLegacyPlayer(player) {
+  const subscriptionId = normalizeText(player?.id);
+  const deviceName = normalizeText(player?.device_model || player?.model || '');
+  const platform = formatLegacyDeviceLabel(
+    player?.device_type,
+    player?.device_os
+  );
+  const externalId = normalizeText(player?.external_user_id);
+  const identifier = normalizeText(player?.identifier);
+  const label =
+    deviceName ||
+    platform ||
+    externalId ||
+    maskSubscriptionIdentifier(identifier) ||
+    `Subscription ${subscriptionId.slice(0, 8)}`;
+
+  return {
+    subscriptionId,
+    label,
+    deviceName,
+    platform,
+    externalId,
+    identifier: maskSubscriptionIdentifier(identifier),
+    lastActiveAt: formatUnixTimestamp(player?.last_active),
+    source: 'onesignal_legacy',
+  };
+}
+
+function formatLegacyDeviceLabel(deviceType, deviceOs) {
+  const code = Number(deviceType);
+  const os = normalizeText(deviceOs);
+  const platform =
+    {
+      0: 'iOS',
+      1: 'Android',
+      2: 'Amazon',
+      5: 'Windows',
+      7: 'macOS',
+      8: 'Web',
+      9: 'Huawei',
+      11: 'Chrome',
+      14: 'Safari',
+      15: 'Firefox',
+    }[code] || '';
+
+  if (platform && os) return `${platform} ${os}`;
+  return platform || os;
+}
+
+function maskSubscriptionIdentifier(value) {
+  const normalized = normalizeText(value);
+  if (!normalized) return '';
+  if (normalized.length <= 12) return normalized;
+  return `${normalized.slice(0, 6)}…${normalized.slice(-4)}`;
+}
+
+function formatUnixTimestamp(value) {
+  const timestamp = Number(value);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return '';
+  return new Date(timestamp * 1000).toISOString();
+}
+
 function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -1326,6 +1570,15 @@ function buildOneSignalAuthorizationHeader(apiKey) {
     return normalized;
   }
   return `Key ${normalized}`;
+}
+
+function buildOneSignalLegacyAuthorizationHeader(apiKey) {
+  const normalized = normalizeText(apiKey);
+  if (!normalized) return '';
+  if (normalized.startsWith('Basic ')) {
+    return normalized;
+  }
+  return `Basic ${normalized}`;
 }
 
 function parseMaybeJson(text) {
