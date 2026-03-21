@@ -3,7 +3,7 @@ const express = require('express');
 const admin = require('firebase-admin');
 
 const app = express();
-app.use(express.json({limit: '1mb'}));
+app.use(express.json({limit: '8mb'}));
 
 const ONE_SIGNAL_APP_ID = process.env.ONESIGNAL_APP_ID || '';
 const ONE_SIGNAL_REST_API_KEY = process.env.ONESIGNAL_REST_API_KEY || '';
@@ -13,6 +13,8 @@ const ONE_SIGNAL_API_URL =
 const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME || '';
 const CLOUDINARY_API_KEY = process.env.CLOUDINARY_API_KEY || '';
 const CLOUDINARY_API_SECRET = process.env.CLOUDINARY_API_SECRET || '';
+const CLOUDINARY_UPLOAD_FOLDER =
+  process.env.CLOUDINARY_UPLOAD_FOLDER || 'freeobmin/push';
 const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || 'swap-e9630';
 const FIREBASE_PUBLIC_API_KEY =
   process.env.FIREBASE_PUBLIC_API_KEY ||
@@ -35,66 +37,91 @@ const ADMIN_ALLOWED_ORIGINS = parseList(process.env.ADMIN_ALLOWED_ORIGINS);
 const PUSH_TEMPLATES = [
   {
     id: 'custom',
-    name: 'Custom message',
-    description: 'Compose a message manually and route it anywhere in the app.',
+    name: 'Власний push',
+    description: 'Створи повідомлення вручну, обери маршрут і додай своє фото.',
+    badge: 'Гнучкий',
+    accent: 'sand',
     defaults: {
       title: '',
+      subtitle: '',
       body: '',
       screen: 'home',
     },
   },
   {
-    id: 'category_update',
-    name: 'Category update',
-    description: 'Send users to a category feed after the tap.',
+    id: 'fresh_category_drop',
+    name: 'Свіжі знахідки',
+    description: 'Стильний шаблон для нових речей у конкретній категорії.',
+    badge: 'Категорія',
+    accent: 'lime',
     defaults: {
-      title: 'New listings in this category',
-      body: 'Tap to open the latest listings.',
+      title: 'Щойно з’явилися нові речі',
+      subtitle: 'Відкрий добірку за секунду',
+      body: 'Заходь у категорію та подивись, що вже віддають безкоштовно.',
       screen: 'category',
       category: 'clothes',
     },
   },
   {
     id: 'item_spotlight',
-    name: 'Item spotlight',
-    description: 'Open a specific listing directly from the push.',
+    name: 'Річ, яку варто забрати',
+    description: 'Перекидає одразу в картку конкретного оголошення.',
+    badge: 'Точково',
+    accent: 'peach',
     defaults: {
-      title: 'New listing',
-      body: 'Tap to view the listing details.',
+      title: 'Поглянь на цю знахідку',
+      subtitle: 'Може підійти саме тобі',
+      body: 'Відкрий оголошення та перевір деталі, поки річ ще доступна.',
       screen: 'item',
     },
   },
   {
     id: 'chat_nudge',
-    name: 'Chat reminder',
-    description: 'Bring the user back into a specific chat thread.',
+    name: 'Вам відповіли',
+    description: 'Повертає користувача в потрібний чат після натискання.',
+    badge: 'Чат',
+    accent: 'sky',
     defaults: {
-      title: 'New message',
-      body: 'Open the chat to continue the conversation.',
+      title: 'У тебе нова відповідь',
+      subtitle: 'Не загуби домовленість',
+      body: 'Зайди в чат, щоб швидко відповісти та домовитися про передачу речі.',
       screen: 'chat',
+    },
+  },
+  {
+    id: 'comeback_digest',
+    name: 'Повернення у стрічку',
+    description: 'Нагадування для неактивних користувачів з теплим тоном.',
+    badge: 'Реактивація',
+    accent: 'olive',
+    defaults: {
+      title: 'У FreeObmin вже є нові речі',
+      subtitle: 'Зазирни в стрічку сьогодні',
+      body: 'Поки тебе не було, з’явилися цікаві безкоштовні речі. Перевір новинки просто зараз.',
+      screen: 'home',
     },
   },
 ];
 
 const APP_CATEGORIES = [
-  {slug: 'electronics', label: 'Electronics'},
-  {slug: 'phones', label: 'Phones and gadgets'},
-  {slug: 'computers', label: 'Computers and office'},
-  {slug: 'clothes', label: 'Clothes and shoes'},
-  {slug: 'kids', label: 'Kids'},
-  {slug: 'home', label: 'Home'},
-  {slug: 'furniture', label: 'Furniture'},
-  {slug: 'kitchen', label: 'Kitchen'},
-  {slug: 'books', label: 'Books'},
-  {slug: 'sport', label: 'Sport'},
-  {slug: 'hobby', label: 'Hobby'},
-  {slug: 'beauty', label: 'Beauty'},
-  {slug: 'pets', label: 'Pets'},
-  {slug: 'auto', label: 'Auto'},
-  {slug: 'garden', label: 'Garden'},
-  {slug: 'tools', label: 'Tools'},
-  {slug: 'games', label: 'Games'},
-  {slug: 'other', label: 'Other'},
+  {slug: 'electronics', label: 'Електроніка'},
+  {slug: 'phones', label: 'Телефони та гаджети'},
+  {slug: 'computers', label: 'Комп’ютери та офіс'},
+  {slug: 'clothes', label: 'Одяг і взуття'},
+  {slug: 'kids', label: 'Дитячі речі'},
+  {slug: 'home', label: 'Для дому'},
+  {slug: 'furniture', label: 'Меблі'},
+  {slug: 'kitchen', label: 'Кухня'},
+  {slug: 'books', label: 'Книги'},
+  {slug: 'sport', label: 'Спорт'},
+  {slug: 'hobby', label: 'Хобі'},
+  {slug: 'beauty', label: 'Краса і догляд'},
+  {slug: 'pets', label: 'Для тварин'},
+  {slug: 'auto', label: 'Авто'},
+  {slug: 'garden', label: 'Сад і город'},
+  {slug: 'tools', label: 'Інструменти'},
+  {slug: 'games', label: 'Ігри'},
+  {slug: 'other', label: 'Інше'},
 ];
 
 const CATEGORY_ALIASES = {
@@ -127,7 +154,12 @@ const CATEGORY_ALIASES = {
 };
 
 const PUSH_ROUTE_SCREENS = ['home', 'category', 'item', 'chat', 'notifications'];
-const PUSH_AUDIENCE_MODES = ['subscribed', 'tag', 'external_ids'];
+const PUSH_AUDIENCE_MODES = [
+  'subscribed',
+  'tag',
+  'external_ids',
+  'subscription_ids',
+];
 const PUSH_HISTORY_COLLECTION = 'admin_push_logs';
 
 let firestore = null;
@@ -173,6 +205,9 @@ app.get('/health', (_req, res) => {
     ok: true,
     firebaseReady: Boolean(firestore),
     firebaseRestReady: Boolean(FIREBASE_PROJECT_ID && FIREBASE_PUBLIC_API_KEY),
+    cloudinaryReady: Boolean(
+      CLOUDINARY_CLOUD_NAME && CLOUDINARY_API_KEY && CLOUDINARY_API_SECRET
+    ),
     firebaseInitError: firebaseInitError || null,
   });
 });
@@ -228,6 +263,9 @@ app.get('/api/push/templates', requireAdmin, (_req, res) => {
     categories: APP_CATEGORIES,
     routeScreens: PUSH_ROUTE_SCREENS,
     audienceModes: PUSH_AUDIENCE_MODES,
+    mediaUploadEnabled: Boolean(
+      CLOUDINARY_CLOUD_NAME && CLOUDINARY_API_KEY && CLOUDINARY_API_SECRET
+    ),
   });
 });
 
@@ -251,6 +289,7 @@ app.post('/api/push/send', requireAdmin, async (req, res) => {
     const input = req.body || {};
     const template = resolveTemplate(input.templateId);
     const title = normalizeText(input.title || template.defaults.title);
+    const subtitle = normalizeText(input.subtitle || template.defaults.subtitle);
     const body = normalizeText(input.body || template.defaults.body);
     if (!title || !body) {
       return res.status(400).json({error: 'title and body are required'});
@@ -266,13 +305,18 @@ app.post('/api/push/send', requireAdmin, async (req, res) => {
     });
 
     const audience = buildAudienceTargeting(input.audience);
+    const media = buildPushMedia(input.media || input);
     const payload = {
       app_id: ONE_SIGNAL_APP_ID,
       headings: {en: title},
       contents: {en: body},
       data: route.data,
       ...audience.targeting,
+      ...media.payload,
     };
+    if (subtitle) {
+      payload.subtitle = {en: subtitle};
+    }
 
     const response = await sendOneSignalRequest(payload);
     const oneSignalMeta = pickOneSignalMeta(response);
@@ -280,10 +324,12 @@ app.post('/api/push/send', requireAdmin, async (req, res) => {
     await savePushHistory(
       {
       title,
+      subtitle,
       body,
       templateId: template.id,
       audience: audience.summary,
       route: route.summary,
+      media: media.summary,
       sentBy: {
         uid: req.adminUser.uid,
         email: req.adminUser.email || '',
@@ -298,6 +344,7 @@ app.post('/api/push/send', requireAdmin, async (req, res) => {
       template: template.id,
       audience: audience.summary,
       route: route.summary,
+      media: media.summary,
       oneSignal: oneSignalMeta,
     });
   } catch (error) {
@@ -305,6 +352,35 @@ app.post('/api/push/send', requireAdmin, async (req, res) => {
       error: error.message || String(error),
       response: error.responseBody || null,
     });
+  }
+});
+
+app.post('/media/upload', requireAdmin, async (req, res) => {
+  if (!CLOUDINARY_CLOUD_NAME || !CLOUDINARY_API_KEY || !CLOUDINARY_API_SECRET) {
+    return res.status(500).json({error: 'Missing Cloudinary config'});
+  }
+
+  const source = req.body || {};
+  const dataUrl = String(source.dataUrl || '').trim();
+  const filename = normalizeUploadFilename(source.filename || 'push-image');
+
+  if (!isImageDataUrl(dataUrl)) {
+    return res.status(400).json({error: 'dataUrl image is required'});
+  }
+
+  try {
+    const uploaded = await uploadCloudinaryImage(dataUrl, filename);
+    return res.json({
+      ok: true,
+      url: uploaded.secure_url || uploaded.url || '',
+      publicId: uploaded.public_id || '',
+      width: uploaded.width || null,
+      height: uploaded.height || null,
+      bytes: uploaded.bytes || null,
+      format: uploaded.format || null,
+    });
+  } catch (error) {
+    return res.status(500).json({error: String(error)});
   }
 });
 
@@ -550,6 +626,7 @@ function buildAudienceTargeting(input) {
     return {
       targeting: {
         included_segments: ['Subscribed Users'],
+        target_channel: 'push',
       },
       summary: {
         mode,
@@ -566,6 +643,7 @@ function buildAudienceTargeting(input) {
     return {
       targeting: {
         filters: [{field: 'tag', key, relation: '=', value}],
+        target_channel: 'push',
       },
       summary: {
         mode,
@@ -575,23 +653,44 @@ function buildAudienceTargeting(input) {
     };
   }
 
-  const externalIds = parseList(source.externalIds);
-  if (externalIds.length === 0) {
+  if (mode === 'external_ids') {
+    const externalIds = parseList(source.externalIds);
+    if (externalIds.length === 0) {
+      throw createHttpError(
+        'externalIds are required for mode=external_ids',
+        400
+      );
+    }
+    return {
+      targeting: {
+        include_aliases: {
+          external_id: externalIds,
+        },
+        target_channel: 'push',
+      },
+      summary: {
+        mode,
+        externalIds,
+      },
+    };
+  }
+
+  const subscriptionIds = parseList(
+    source.subscriptionIds || source.subscription_ids
+  );
+  if (subscriptionIds.length === 0) {
     throw createHttpError(
-      'externalIds are required for mode=external_ids',
+      'subscriptionIds are required for mode=subscription_ids',
       400
     );
   }
   return {
     targeting: {
-      include_aliases: {
-        external_id: externalIds,
-      },
-      target_channel: 'push',
+      include_subscription_ids: subscriptionIds,
     },
     summary: {
       mode,
-      externalIds,
+      subscriptionIds,
     },
   };
 }
@@ -601,6 +700,30 @@ function createHttpError(message, statusCode, responseBody = null) {
   error.statusCode = statusCode;
   error.responseBody = responseBody;
   return error;
+}
+
+function buildPushMedia(input) {
+  const imageUrl = normalizeText(input.imageUrl || input.image_url);
+  if (!imageUrl) {
+    return {
+      payload: {},
+      summary: {},
+    };
+  }
+
+  return {
+    payload: {
+      big_picture: imageUrl,
+      chrome_web_image: imageUrl,
+      huawei_big_picture: imageUrl,
+      ios_attachments: {
+        push_image: imageUrl,
+      },
+    },
+    summary: {
+      imageUrl,
+    },
+  };
 }
 
 function clampInteger(value, fallback, min, max) {
@@ -636,10 +759,12 @@ function serializePushHistoryRecord(id, data) {
   return {
     id,
     title: data.title || '',
+    subtitle: data.subtitle || '',
     body: data.body || '',
     templateId: data.templateId || 'custom',
     audience: data.audience || {},
     route: data.route || {},
+    media: data.media || {},
     sentBy: data.sentBy || {},
     oneSignal: data.oneSignal || {},
     createdAt: serializeTimestamp(data.createdAt),
@@ -1007,6 +1132,18 @@ function parseMaybeJson(text) {
   }
 }
 
+function normalizeUploadFilename(value) {
+  return String(value || 'push-image')
+    .replace(/[^\w.\-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 80);
+}
+
+function isImageDataUrl(value) {
+  return /^data:image\/[a-z0-9.+-]+;base64,/i.test(String(value || ''));
+}
+
 function extractCloudinaryPublicId(url) {
   try {
     const parsed = new URL(String(url || ''));
@@ -1024,9 +1161,62 @@ function extractCloudinaryPublicId(url) {
   }
 }
 
+function buildCloudinarySignatureFromParams(params) {
+  const payload = Object.keys(params)
+    .sort()
+    .map((key) => `${key}=${params[key]}`)
+    .join('&');
+  return crypto
+    .createHash('sha1')
+    .update(`${payload}${CLOUDINARY_API_SECRET}`)
+    .digest('hex');
+}
+
 function buildCloudinarySignature(publicId, timestamp) {
-  const payload = `public_id=${publicId}&timestamp=${timestamp}${CLOUDINARY_API_SECRET}`;
-  return crypto.createHash('sha1').update(payload).digest('hex');
+  const payload = {public_id: publicId, timestamp};
+  return buildCloudinarySignatureFromParams(payload);
+}
+
+async function uploadCloudinaryImage(dataUrl, filename) {
+  const timestamp = Math.floor(Date.now() / 1000);
+  const publicId = normalizeUploadFilename(filename);
+  const uploadParams = {
+    folder: CLOUDINARY_UPLOAD_FOLDER,
+    public_id: publicId,
+    timestamp: String(timestamp),
+  };
+  const signature = buildCloudinarySignatureFromParams(uploadParams);
+  const body = new URLSearchParams({
+    file: dataUrl,
+    folder: CLOUDINARY_UPLOAD_FOLDER,
+    timestamp: String(timestamp),
+    api_key: CLOUDINARY_API_KEY,
+    signature,
+    public_id: publicId,
+  });
+
+  const response = await fetch(
+    `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: body.toString(),
+    }
+  );
+
+  const text = await response.text();
+  const parsed = parseMaybeJson(text);
+  if (!response.ok) {
+    throw new Error(
+      typeof parsed === 'string'
+        ? parsed
+        : `Cloudinary upload failed with ${response.status}`
+    );
+  }
+
+  return parsed;
 }
 
 async function destroyCloudinaryAsset(publicId) {
