@@ -222,14 +222,46 @@ app.get('/health', (_req, res) => {
   });
 });
 
-app.post('/notify', async (req, res) => {
+app.post('/notify', requireAuthenticatedUser, async (req, res) => {
   if (!ONE_SIGNAL_APP_ID || !ONE_SIGNAL_REST_API_KEY) {
     return res.status(500).json({error: 'Missing OneSignal config'});
   }
 
-  const {to, title, body, url, appUrl, data, type, senderName} = req.body || {};
-  if (!to || !title || !body) {
-    return res.status(400).json({error: 'to, title, body required'});
+  const {
+    to,
+    userId,
+    toUserId,
+    title,
+    body,
+    url,
+    appUrl,
+    data,
+    type,
+    senderName,
+  } = req.body || {};
+
+  let subscriptionId = normalizeText(to);
+  const targetUserId = normalizeText(userId || toUserId);
+
+  if (!subscriptionId && targetUserId) {
+    if (!firestore) {
+      return res.status(500).json({
+        error: 'Push server is missing admin Firestore access',
+      });
+    }
+    try {
+      const userDoc = await readUserRoleViaAdminSdk(targetUserId);
+      subscriptionId = normalizeText(userDoc.oneSignalId);
+    } catch (error) {
+      return res.status(500).json({
+        error: 'Failed to resolve target user push subscription',
+        details: String(error),
+      });
+    }
+  }
+
+  if (!subscriptionId || !title || !body) {
+    return res.status(400).json({error: 'target user and title/body required'});
   }
 
   const formatted = formatNotification({
@@ -241,7 +273,7 @@ app.post('/notify', async (req, res) => {
 
   const payload = {
     app_id: ONE_SIGNAL_APP_ID,
-    include_subscription_ids: [to],
+    include_subscription_ids: [subscriptionId],
     target_channel: 'push',
     headings: {en: formatted.title},
     contents: {en: formatted.body},
@@ -493,7 +525,7 @@ app.post('/media/upload', requireAdmin, async (req, res) => {
   }
 });
 
-app.post('/media/delete', async (req, res) => {
+app.post('/media/delete', requireAdmin, async (req, res) => {
   if (!CLOUDINARY_CLOUD_NAME || !CLOUDINARY_API_KEY || !CLOUDINARY_API_SECRET) {
     return res.status(500).json({error: 'Missing Cloudinary config'});
   }
@@ -601,23 +633,23 @@ function truncateText(value, maxLength = 140) {
 }
 
 function looksFormatted(body) {
-  return /^Р’С–Рґ:\s/i.test(String(body || '')) || String(body || '').includes('\n');
+  return /^Від:\s/i.test(String(body || '')) || String(body || '').includes('\n');
 }
 
 function formatChatBody(body, senderName) {
   if (looksFormatted(body)) return body;
-  const sender = normalizeText(senderName) || 'РєРѕСЂРёСЃС‚СѓРІР°С‡Р°';
+  const sender = normalizeText(senderName) || 'користувача';
   const message = truncateText(
-    body || 'Р’С–РґРєСЂРёР№ С‡Р°С‚, С‰РѕР± РїСЂРѕС‡РёС‚Р°С‚Рё РїРѕРІС–РґРѕРјР»РµРЅРЅСЏ.'
+    body || 'Відкрий чат, щоб прочитати повідомлення.'
   );
-  return `Р’С–Рґ: ${sender}\n${message}`;
+  return `Від: ${sender}\n${message}`;
 }
 
 function formatSystemBody(body, senderName) {
   if (looksFormatted(body)) return body;
-  const sender = normalizeText(senderName) || 'РєРѕРјР°РЅРґРё FreeObmin';
-  const message = truncateText(body || 'РќРѕРІРµ СЃРёСЃС‚РµРјРЅРµ РїРѕРІС–РґРѕРјР»РµРЅРЅСЏ');
-  return `Р’С–Рґ: ${sender}\n${message}`;
+  const sender = normalizeText(senderName) || 'команди FreeObmin';
+  const message = truncateText(body || 'Нове системне повідомлення');
+  return `Від: ${sender}\n${message}`;
 }
 
 function formatNotification({title, body, type, senderName}) {
@@ -625,15 +657,15 @@ function formatNotification({title, body, type, senderName}) {
   const normalizedBody = String(body || '');
   const kind = normalizeText(type).toLowerCase();
 
-  if (kind === 'chat' || normalizedTitle.toLowerCase().includes('РїРѕРІС–РґРѕРј')) {
+  if (kind === 'chat' || normalizedTitle.toLowerCase().includes('повідом')) {
     return {
-      title: normalizedTitle || 'РќРѕРІРµ РїРѕРІС–РґРѕРјР»РµРЅРЅСЏ',
+      title: normalizedTitle || 'Нове повідомлення',
       body: formatChatBody(normalizedBody, senderName),
     };
   }
 
   return {
-    title: normalizedTitle || 'РЎРїРѕРІС–С‰РµРЅРЅСЏ',
+    title: normalizedTitle || 'Сповіщення',
     body: formatSystemBody(normalizedBody, senderName),
   };
 }
@@ -1310,6 +1342,31 @@ function formatUnixTimestamp(value) {
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+async function requireAuthenticatedUser(req, res, next) {
+  const authHeader = String(req.headers.authorization || '');
+  const bearerPrefix = 'Bearer ';
+  if (!authHeader.startsWith(bearerPrefix)) {
+    return res.status(401).json({error: 'Missing Bearer token'});
+  }
+
+  const token = authHeader.slice(bearerPrefix.length).trim();
+  if (!token) {
+    return res.status(401).json({error: 'Missing Bearer token'});
+  }
+
+  try {
+    const verified = await verifyFirebaseUser(token);
+    req.authUser = {
+      uid: verified.uid,
+      email: verified.email || '',
+    };
+    req.authToken = token;
+    return next();
+  } catch (error) {
+    return res.status(401).json({error: 'Invalid auth token', details: String(error)});
+  }
 }
 
 async function requireAdmin(req, res, next) {
