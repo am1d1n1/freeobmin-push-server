@@ -29,6 +29,7 @@ const FIREBASE_PUBLIC_API_KEY =
 const DEFAULT_ALLOWED_ORIGINS = [
   'https://freeobmin.pp.ua',
   'https://www.freeobmin.pp.ua',
+  'https://admin.freeobmin.pp.ua',
   'http://localhost:3000',
   'http://localhost:4173',
   'http://localhost:5500',
@@ -613,9 +614,13 @@ function loadServiceAccountFromEnv() {
 
 function getAllowedOrigin(origin) {
   if (!origin) return '';
-  const allowed = ADMIN_ALLOWED_ORIGINS.length
-    ? ADMIN_ALLOWED_ORIGINS
-    : DEFAULT_ALLOWED_ORIGINS;
+  // Keep the production admin host enabled even when Render has an older
+  // ADMIN_ALLOWED_ORIGINS value configured. The browser sends an OPTIONS
+  // preflight before the protected CRM endpoints, so CORS must be answered
+  // before requireAdmin runs.
+  const allowed = [
+    ...new Set([...DEFAULT_ALLOWED_ORIGINS, ...ADMIN_ALLOWED_ORIGINS]),
+  ];
   if (allowed.includes('*')) return origin;
   return allowed.includes(origin) ? origin : '';
 }
