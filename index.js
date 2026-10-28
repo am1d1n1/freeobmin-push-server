@@ -30,6 +30,8 @@ const DEFAULT_ALLOWED_ORIGINS = [
   'https://freeobmin.pp.ua',
   'https://www.freeobmin.pp.ua',
   'https://admin.freeobmin.pp.ua',
+  // Temporary Netlify preview for the CRM redesign.
+  'https://6ae1d4be147409d2014c522b--freeobmin.netlify.app',
   'http://localhost:3000',
   'http://localhost:4173',
   'http://localhost:5500',
