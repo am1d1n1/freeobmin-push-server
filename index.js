@@ -771,16 +771,16 @@ async function buildAudienceTargeting(input) {
   }
 
   if (mode === 'subscribed') {
-    const segment = await resolveSubscribedSegment();
     return {
       targeting: {
-        included_segments: [segment.name],
-        target_channel: 'push',
+        // This is OneSignal's built-in audience for users with an active
+        // push subscription. Keep the canonical name instead of selecting a
+        // custom/localized segment from the segments directory.
+        included_segments: ['Subscribed Users'],
       },
       summary: {
         mode,
-        segmentName: segment.name,
-        availableSegments: segment.available,
+        segmentName: 'Subscribed Users',
       },
     };
   }
