@@ -12,6 +12,11 @@ const ONE_SIGNAL_LEGACY_REST_API_KEY =
 const ONE_SIGNAL_API_URL =
   process.env.ONESIGNAL_CREATE_MESSAGE_URL ||
   'https://api.onesignal.com/notifications';
+// OneSignal accepts an Android channel only when that channel already exists
+// in the app configuration. Keep it optional so a missing channel never
+// blocks a broadcast; set ONESIGNAL_ANDROID_CHANNEL_ID after creating one.
+const ONE_SIGNAL_ANDROID_CHANNEL_ID =
+  normalizeText(process.env.ONESIGNAL_ANDROID_CHANNEL_ID);
 const ONE_SIGNAL_LEGACY_PLAYERS_URL =
   'https://onesignal.com/api/v1/players';
 const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME || '';
@@ -380,7 +385,9 @@ app.post('/api/push/send', requireAdmin, async (req, res) => {
       headings: {en: title},
       contents: {en: body},
       data: route.data,
-      android_channel_id: 'freeobmin_push_high_v2',
+      ...(ONE_SIGNAL_ANDROID_CHANNEL_ID
+        ? {android_channel_id: ONE_SIGNAL_ANDROID_CHANNEL_ID}
+        : {}),
       priority: 10,
       ...audience.targeting,
       ...media.payload,

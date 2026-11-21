@@ -8,6 +8,7 @@
 5) Add environment variables:
    - `ONESIGNAL_APP_ID`
    - `ONESIGNAL_REST_API_KEY`
+   - `ONESIGNAL_ANDROID_CHANNEL_ID` (optional; only set it after creating the same channel in the Android/OneSignal configuration)
 
 ## Test locally
 ```bash
