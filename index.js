@@ -373,7 +373,7 @@ app.post('/api/push/send', requireAdmin, async (req, res) => {
       chatId: input.chatId || input.route?.chatId,
     });
 
-    const audience = await buildAudienceTargeting(input.audience);
+    const audience = await buildAudienceTargeting(input.audience, req.adminToken);
     const media = buildPushMedia(input.media || input);
     const payload = {
       app_id: ONE_SIGNAL_APP_ID,
@@ -745,7 +745,7 @@ function buildAdminPushRoute(input) {
   };
 }
 
-async function buildAudienceTargeting(input) {
+async function buildAudienceTargeting(input, authToken) {
   const source = isPlainObject(input) ? input : {};
   const mode = normalizeText(source.mode || 'subscribed').toLowerCase();
 
@@ -754,6 +754,34 @@ async function buildAudienceTargeting(input) {
   }
 
   if (mode === 'subscribed') {
+    try {
+      const directory = await readFirestoreSubscriptionDirectory(20000, authToken);
+      const subscriptionIds = directory.items
+        .filter((item) => item.pushSubscribed !== false)
+        .map((item) => normalizeText(item.subscriptionId))
+        .filter(Boolean)
+        .slice(0, 20000);
+
+      if (subscriptionIds.length > 0) {
+        return {
+          targeting: {
+            include_subscription_ids: subscriptionIds,
+            target_channel: 'push',
+          },
+          summary: {
+            mode,
+            source: 'firestore_users',
+            subscriptionCount: subscriptionIds.length,
+          },
+        };
+      }
+    } catch (error) {
+      console.warn(
+        '[push-send] Firestore subscription lookup failed',
+        JSON.stringify({error: error.message || String(error)})
+      );
+    }
+
     return {
       targeting: {
         // This is OneSignal's built-in audience for users with an active
@@ -1246,6 +1274,7 @@ function serializeFirestoreSubscription(uid, data) {
   return {
     subscriptionId,
     label: name || `User ${uid.slice(0, 8)}`,
+    pushSubscribed: data.pushSubscribed === false ? false : true,
     deviceName: '',
     platform: '',
     externalId: uid,
