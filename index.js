@@ -380,6 +380,8 @@ app.post('/api/push/send', requireAdmin, async (req, res) => {
       headings: {en: title},
       contents: {en: body},
       data: route.data,
+      android_channel_id: 'freeobmin_push_high_v2',
+      priority: 10,
       ...audience.targeting,
       ...media.payload,
     };
