@@ -369,13 +369,23 @@ app.post('/api/push/send', requireAdmin, async (req, res) => {
       return res.status(400).json({error: 'title and body are required'});
     }
 
+    const requestedScreen = normalizeText(
+      input.screen || input.route?.screen || template.defaults.screen
+    ).toLowerCase();
+    const requestedChatId = normalizeText(input.chatId || input.route?.chatId);
+    // A broadcast can accidentally keep the CRM's previous "chat" selection.
+    // Without a concrete chat ID, open the app home instead of rejecting the
+    // whole send with a 400 response.
+    const resolvedScreen =
+      requestedScreen === 'chat' && !requestedChatId ? 'home' : requestedScreen;
+
     const route = buildAdminPushRoute({
       ...template.defaults,
       ...(isPlainObject(input.route) ? input.route : {}),
-      screen: normalizeText(input.screen || input.route?.screen || template.defaults.screen),
+      screen: resolvedScreen,
       category: input.category || input.route?.category || template.defaults.category,
       itemId: input.itemId || input.route?.itemId,
-      chatId: input.chatId || input.route?.chatId,
+      chatId: requestedChatId,
     });
 
     const audience = await buildAudienceTargeting(input.audience, req.adminToken);
