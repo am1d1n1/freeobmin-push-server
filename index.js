@@ -1662,7 +1662,8 @@ async function sendOneSignalRequest(payload) {
   const parsed = parseMaybeJson(text);
   if (!response.ok) {
     throw createHttpError(
-      typeof parsed === 'string' ? parsed : `OneSignal request failed with ${response.status}`,
+      extractOneSignalErrorMessage(parsed) ||
+        `OneSignal request failed with ${response.status}`,
       response.status,
       parsed
     );
