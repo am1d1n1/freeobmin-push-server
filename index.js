@@ -412,27 +412,10 @@ app.post('/api/push/send', requireAdmin, async (req, res) => {
       })
     );
 
-    let response = await sendOneSignalRequest(payload);
-    let initialRequestDebug = requestDebug;
-
-    if (shouldRetryDefaultPushAudience(response, audience.summary, payload)) {
-      const retryPayload = buildDefaultPushAudiencePayload(payload);
-      const retryDebug = buildOneSignalPayloadDebug(retryPayload);
-      console.warn(
-        '[push-send] retrying without explicit segments',
-        JSON.stringify({
-          templateId: template.id,
-          initialRequestDebug,
-          retryDebug,
-        })
-      );
-      response = await sendOneSignalRequest(retryPayload);
-      requestDebug = {
-        ...retryDebug,
-        fallbackApplied: true,
-        initialIncludedSegments: initialRequestDebug.includedSegments || [],
-      };
-    }
+    // Never retry a mass push without an audience. OneSignal rejects such a
+    // request with "You must include which players...", and it can never
+    // safely mean "all users". Keep the explicit Subscribed Users segment.
+    const response = await sendOneSignalRequest(payload);
 
     const oneSignalMeta = pickOneSignalMeta(response);
     console.log(
