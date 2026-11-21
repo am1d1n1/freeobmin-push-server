@@ -1700,6 +1700,32 @@ function parseMaybeJson(text) {
   }
 }
 
+// OneSignal uses a few different error shapes depending on the endpoint and
+// API version. Keep one safe formatter for retries, logs and HTTP responses.
+function extractOneSignalErrorMessage(payload) {
+  if (payload == null) return '';
+  if (typeof payload === 'string') return payload;
+  if (Array.isArray(payload)) {
+    return payload
+      .map((item) => extractOneSignalErrorMessage(item))
+      .filter(Boolean)
+      .join('; ');
+  }
+  if (typeof payload !== 'object') return String(payload);
+
+  const values = [
+    payload.errors,
+    payload.error,
+    payload.message,
+    payload.invalid_player_ids,
+    payload.response,
+  ]
+    .map((value) => extractOneSignalErrorMessage(value))
+    .filter(Boolean);
+
+  return values.join('; ') || JSON.stringify(payload);
+}
+
 function normalizeUploadFilename(value) {
   return String(value || 'push-image')
     .replace(/[^\w.\-]+/g, '-')
